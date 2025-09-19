@@ -18,7 +18,8 @@
 
 <img width="880" height="651" alt="image" src="https://github.com/user-attachments/assets/e70a48cd-8aa9-4bb5-9793-2bee3255edf4" />
 
-<img width="1280" height="960" alt="image" src="https://github.com/user-attachments/assets/12e84a29-deae-4689-af71-b3568de80df1" />
+
+<img width="880" height="660" alt="image" src="https://github.com/user-attachments/assets/12e84a29-deae-4689-af71-b3568de80df1" />
 
 # Hardware Resources
 
