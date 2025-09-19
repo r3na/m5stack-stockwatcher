@@ -90,8 +90,40 @@
 #include <time.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <ElegantOTA.h>
+#include <WebServer.h>
 #include "M5UnitENV.h"
 
+// Stock object def
+class Stock {
+  public:float last, bid, ask;
+  public:double volume;
+  public:String symbol, lastTradeTime, deltaIndicator;
+  Stock() {
+    Set("");
+  }
+  public:void Set(String symbol_val) {
+    symbol = symbol_val;
+    last = NAN;
+    bid = NAN;
+    ask = NAN;
+    volume = NAN;
+    lastTradeTime = "";
+    deltaIndicator = "";
+  }
+  public:void Debug() {
+    Serial.print(symbol + " (" + deltaIndicator + ") - last:");
+    Serial.print(last, 2);  // print with 2 decimals
+    Serial.print(", bid:");
+    Serial.print(bid, 2);  // print with 2 decimals
+    Serial.print(", ask:");
+    Serial.print(ask, 2);  // print with 2 decimals
+    Serial.print(", volume: ");
+    Serial.print(volume, 0); // print with 0 decimals
+    Serial.print(" (" + lastTradeTime + ")");
+    Serial.println("");
+  }
+};
 
 // ====== AWS
 const String AWS_URL = "https://*";
@@ -120,32 +152,13 @@ uint32_t lastDraw = -DRAW_INTERVAL_MS;
 // ====== Altitude calc ======
 const float SEA_LEVEL_HPA = 1013.25f;
 
-// hardware and logic
+// hardware and logic plus others...
 StaticJsonDocument<5096> doc;
 bool hardwareStarted = false;
 struct tm tinfo;
 bool settingStock = false;
-
-class Stock {
-  public:float last, bid, ask;
-  String symbol, timestamp;
-  Stock(String symbol_val) {
-    symbol = symbol_val;
-    last = NAN;
-    bid = NAN;
-    ask = NAN;
-    timestamp = "";
-  }
-  public:void Debug() {
-    Serial.print(symbol + " - last:");
-    Serial.print(last, 2);  // print with 2 decimals
-    Serial.print(", bid:");
-    Serial.print(bid, 2);  // print with 2 decimals
-    Serial.print(", ask:");
-    Serial.print(ask, 2);  // print with 2 decimals
-    Serial.println("");
-  }
-};
+WebServer server(80);
+Stock stock;
 
 void connectWiFiIfConfigured() {
 
@@ -164,8 +177,9 @@ void connectWiFiIfConfigured() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("Wifi is connected!");
-    configTzTime(TZ_NY, NTP_SERVER);
+    Serial.println(WiFi.localIP());
     Serial.println("Configuring NTP and Time...");
+    configTzTime(TZ_NY, NTP_SERVER);
     // Wait briefly for NTP
     for (int i = 0; i < 30; ++i) {
       if (getLocalTime(&tinfo)) {
@@ -200,6 +214,7 @@ bool initENV() {
 }
 
 void initDisplay() {
+  Serial.println("Starting Display...");
   // init display
   M5.Display.fillScreen(TFT_BLACK);  // clear screen
   M5.Display.setCursor(0, 0);
@@ -208,10 +223,36 @@ void initDisplay() {
   M5.Display.setTextSize(2);  // font size multiplier
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 
+  // Startup Text :)
+  // Clear whole screen
+  M5.Display.fillRect(0, 0, M5.Display.width(), M5.Display.height(), TFT_BLACK);
+
+  // creating buffers
+  char tbuf1[20], tbuf2[20];
+  // printing and storing buffers
+  snprintf(tbuf1, sizeof(tbuf1), "Stock");
+  snprintf(tbuf2, sizeof(tbuf2), "Watcher");
+
+  // printing pseudo Logo
   M5.Display.setTextDatum(textdatum_t::middle_center);
+  M5.Display.setTextSize(4.0);  // big clock
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString(tbuf1, M5.Display.width() / 2, 40);
+  M5.Display.drawString(tbuf2, M5.Display.width() / 2, 80);
 
   // debug...
-  Serial.println("Starting Display...");
+  Serial.println("Display is started.");
+}
+void initWebServer() {
+  Serial.println("trying to start web server and config OTA...");
+  // webserver and OTA...
+  server.on("/", []() {
+    server.send(200, "text/plain", stock.lastTradeTime);
+  });
+  ElegantOTA.begin(&server);
+  server.begin();
+  
+  Serial.println("webserver is completed.");
 }
 void setup() {
 
@@ -219,6 +260,9 @@ void setup() {
   auto cfg = M5.config();
   M5.begin(cfg);
   delay(100);
+
+  // display setup
+  initDisplay();
 
   // speaker
   M5.Speaker.begin();
@@ -230,14 +274,14 @@ void setup() {
     delay(250);
   }
 
-  // display setup
-  initDisplay();
-
   // Optional NTP
   connectWiFiIfConfigured();
 
   // sensor setup
   initENV();
+
+  // init web server and ota... etc
+  initWebServer();
 
   // finished
   hardwareStarted = true;
@@ -329,22 +373,28 @@ bool parsePayload(String payload) {
   }
 }
 
-Stock getStockPrice(String symbol) {
-  Stock tmp(symbol);
+bool getStockPrice(String symbol) {
   if (fetchPayloadFromInternet()) {
-    tmp.last = doc[symbol]["last"].as<float>();
-    tmp.bid = doc[symbol]["bid"].as<float>();
-    tmp.ask = doc[symbol]["ask"].as<float>();
-    tmp.Debug();
+    // reset
+    stock.Set(symbol);
+    // persist
+    stock.last = doc[symbol]["last"].as<float>();
+    stock.bid = doc[symbol]["bid"].as<float>();
+    stock.ask = doc[symbol]["ask"].as<float>();
+    stock.volume = doc[symbol]["volume"].as<double>();
+    stock.deltaIndicator = doc[symbol]["deltaIndicator"].as<String>();
+    stock.lastTradeTime = doc[symbol]["lastTradeTime"].as<String>();
+    stock.Debug();
+    return true;
   }
-  return tmp;
+  return false;
 }
 
 void drawTopBar(float tempC, float hum, float pressure, float altitude) {
 
   Serial.println("Drawing Top Bar...");
   // Top bar background
-  M5.Display.fillRect(0, 0, M5.Display.width(), 50, TFT_BLACK);
+  M5.Display.fillRect(0, 0, M5.Display.width(), M5.Display.height(), TFT_BLACK);
 
   // Small text centered line with T/RH
   M5.Display.setTextDatum(textdatum_t::middle_center);
@@ -389,7 +439,9 @@ void drawClockAndDate() {
     symbol = "NVDA";
   }
  
-  Stock tmp = getStockPrice(symbol);
+  if (!getStockPrice(symbol)) {
+    Serial.println("error fetching stock data...");
+  }
 
   // Clear main area except top bar
   M5.Display.fillRect(0, 50, M5.Display.width(), M5.Display.height() - 50, TFT_BLACK);
@@ -397,8 +449,8 @@ void drawClockAndDate() {
   // creating buffers
   char tbuf1[20], tbuf2[20], tbuf3[20];
   // printing and storing buffers
-  snprintf(tbuf1, sizeof(tbuf1), "%s:%.2f", symbol, tmp.last);
-  snprintf(tbuf2, sizeof(tbuf2), "%.2f / %.2f", tmp.bid, tmp.ask);
+  snprintf(tbuf1, sizeof(tbuf1), "%s:%.2f", symbol, stock.last);
+  snprintf(tbuf2, sizeof(tbuf2), "%.2f / %.2f", stock.bid, stock.ask);
   snprintf(tbuf3, sizeof(tbuf3), "%04d-%02d-%02d %02d:%02d", tinfo.tm_year + 1900, tinfo.tm_mon + 1, tinfo.tm_mday, tinfo.tm_hour, tinfo.tm_min);
 
   // printing LAST
@@ -410,7 +462,11 @@ void drawClockAndDate() {
   // printing BID and ASK
   M5.Display.setTextDatum(textdatum_t::middle_center);
   M5.Display.setTextSize(2.0);  // big clock
-  M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+  if (stock.deltaIndicator == "up") {
+    M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
+  } else {
+    M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+  }
   M5.Display.drawString(tbuf2, M5.Display.width() / 2, 90);
 
   // Small date at bottom
@@ -463,7 +519,10 @@ void drawScreen() {
 void loop() {
   // system loop
   if (hardwareStarted) {
+    // handlers
     M5.update();
+    server.handleClient();
+    ElegantOTA.loop();
     // check for the last stock refresh :)
     uint32_t now = millis();
     bool refreshData = now - lastDraw >= DRAW_INTERVAL_MS;
