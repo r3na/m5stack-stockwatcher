@@ -96,13 +96,17 @@
 
 // Stock object def
 class Stock {
-  public:float last, bid, ask;
-  public:double volume;
-  public:String symbol, lastTradeTime, deltaIndicator;
+public:
+  float last, bid, ask;
+public:
+  double volume;
+public:
+  String symbol, lastTradeTime, deltaIndicator;
   Stock() {
     Set("");
   }
-  public:void Set(String symbol_val) {
+public:
+  void Set(String symbol_val) {
     symbol = symbol_val;
     last = NAN;
     bid = NAN;
@@ -111,7 +115,8 @@ class Stock {
     lastTradeTime = "";
     deltaIndicator = "";
   }
-  public:void Debug() {
+public:
+  void Debug() {
     Serial.print(symbol + " (" + deltaIndicator + ") - last:");
     Serial.print(last, 2);  // print with 2 decimals
     Serial.print(", bid:");
@@ -119,7 +124,7 @@ class Stock {
     Serial.print(", ask:");
     Serial.print(ask, 2);  // print with 2 decimals
     Serial.print(", volume: ");
-    Serial.print(volume, 0); // print with 0 decimals
+    Serial.print(volume, 0);  // print with 0 decimals
     Serial.print(" (" + lastTradeTime + ")");
     Serial.println("");
   }
@@ -146,7 +151,7 @@ SHT3X sht30;  // temp/humidity
 QMP6988 qmp;  // pressure
 
 // ====== Display settings ======
-const uint32_t DRAW_INTERVAL_MS = 45*1000;
+const uint32_t DRAW_INTERVAL_MS = 45 * 1000;
 uint32_t lastDraw = -DRAW_INTERVAL_MS;
 
 // ====== Altitude calc ======
@@ -218,7 +223,7 @@ void initDisplay() {
   // init display
   M5.Display.fillScreen(TFT_BLACK);  // clear screen
   M5.Display.setCursor(0, 0);
-  M5.Display.setRotation(3);         // 3 = landscape, 0 = portrait
+  M5.Display.setRotation(3);  // 3 = landscape, 0 = portrait
   // font config
   M5.Display.setTextSize(2);  // font size multiplier
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -251,7 +256,7 @@ void initWebServer() {
   });
   ElegantOTA.begin(&server);
   server.begin();
-  
+
   Serial.println("webserver is completed.");
 }
 void setup() {
@@ -269,7 +274,7 @@ void setup() {
 
   // serial init
   Serial.begin(115200);
-  for (int i=0; i<10; i++) {
+  for (int i = 0; i < 10; i++) {
     Serial.println("........");
     delay(250);
   }
@@ -286,7 +291,19 @@ void setup() {
   // finished
   hardwareStarted = true;
 }
-
+bool verifyWifi() {
+  // attempt to reconnect
+  unsigned long start = millis();
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  } else {
+    WiFi.reconnect();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+      delay(250);
+    }
+    return verifyWifi();
+  }
+}
 float fetchQNH() {
   // verify wifi first
   if (WiFi.status() != WL_CONNECTED) {
@@ -303,10 +320,10 @@ float fetchQNH() {
       String payload = http.getString();
       // Look for "Qxxxx" inside the METAR
       int idx = payload.indexOf(" Q");
-      if (idx == -1) idx = payload.indexOf("\nQ"); // sometimes newline
+      if (idx == -1) idx = payload.indexOf("\nQ");  // sometimes newline
       if (idx > 0) {
         String qnhStr = payload.substring(idx + 2, idx + 6);
-        float qnh = qnhStr.toFloat(); // in hPa
+        float qnh = qnhStr.toFloat();  // in hPa
         Serial.printf("QNH: %.1f hPa\n", qnh);
         return qnh;
       } else {
@@ -315,7 +332,7 @@ float fetchQNH() {
     }
   } else {
     Serial.printf("HTTP error: %s\n", http.errorToString(httpCode).c_str());
-  }  
+  }
   http.end();
   return SEA_LEVEL_HPA;
 }
@@ -438,7 +455,7 @@ void drawClockAndDate() {
   } else {
     symbol = "NVDA";
   }
- 
+
   if (!getStockPrice(symbol)) {
     Serial.println("error fetching stock data...");
   }
@@ -519,6 +536,8 @@ void drawScreen() {
 void loop() {
   // system loop
   if (hardwareStarted) {
+    // verify wifi
+    verifyWifi();
     // handlers
     M5.update();
     server.handleClient();
