@@ -83,8 +83,6 @@
     "AS IS", WITHOUT WARRANTY OF ANY KIND.
 */
 
-
-#include <M5Unified.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <time.h>
@@ -92,7 +90,12 @@
 #include <ArduinoJson.h>
 #include <ElegantOTA.h>
 #include <WebServer.h>
-#include "M5UnitENV.h"
+#include <SPI.h>
+
+// M5Stack (https://github.com/m5stack/M5Unit-ENV)
+#include <M5Unified.h>
+#include <M5UnitUnified.h>
+#include <M5UnitUnifiedENV.h>
 
 // Stock object def
 class Stock {
@@ -147,8 +150,10 @@ const int BEEP_NOTE_B = 112;
 const char* TZ_NY = "EST5EDT,M3.2.0,M11.1.0";  // NASDAQ time
 
 // ====== ENV III sensors ======
-SHT3X sht30;  // temp/humidity
-QMP6988 qmp;  // pressure
+m5::unit::UnitUnified Units;
+m5::unit::UnitENV3 unitENV3;
+auto& sht30 = unitENV3.sht30;  // temp/humidity
+auto& qmp6988 = unitENV3.qmp6988;  // pressure
 
 // ====== Display settings ======
 const uint32_t DRAW_INTERVAL_MS = 45 * 1000;
@@ -160,10 +165,11 @@ const float SEA_LEVEL_HPA = 1013.25f;
 // hardware and logic plus others...
 StaticJsonDocument<5096> doc;
 bool hardwareStarted = false;
-struct tm tinfo;
 bool settingStock = false;
+struct tm tinfo;
 WebServer server(80);
 Stock stock;
+float tempC = NAN, hum = NAN, pressHpa, altitude = NAN;
 
 void connectWiFiIfConfigured() {
 
@@ -204,17 +210,15 @@ void connectWiFiIfConfigured() {
   }
 }
 
-bool initENV() {
+bool initHardware() {
   Serial.println("Starting Sensors...");
-  if (!qmp.begin(&Wire, QMP6988_SLAVE_ADDRESS_L, 0, 26, 400000U)) {
-    Serial.println("Couldn't find QMP6988");
-    while (1) delay(1);
+  if (!Units.add(unitENV3, Wire) || !Units.begin()) {
+    Serial.println("Failed to begin Unit ENV3");
   }
-  if (!sht30.begin(&Wire, SHT3X_I2C_ADDR, 0, 26, 400000U)) {
-    Serial.println("Couldn't find SHT3X");
-    while (1) delay(1);
-  }
-  Serial.println("Sensors where configured...");
+  Serial.println("Sensor(s) initialization is over.");
+  // speaker (a bit random, i know)
+  M5.Speaker.begin();
+  Serial.println("Speaker has been started...");
   return true;
 }
 
@@ -259,6 +263,40 @@ void initWebServer() {
 
   Serial.println("webserver is completed.");
 }
+void initComm() {
+  // serial init
+  Serial.begin(115200);
+  for (int i = 0; i < 10; i++) {
+    Serial.println("........");
+    delay(250);
+  }
+  // wire - init primary I2C bus
+  auto pin_num_sda = M5.getPin(m5::pin_name_t::port_a_sda);
+  auto pin_num_scl = M5.getPin(m5::pin_name_t::port_a_scl);
+  Serial.println("I2C - SDA: " + String(pin_num_sda) + " SCL: " + String(pin_num_scl));
+
+  #if defined(ARDUINO_M5STACK_STICKC_PLUS)
+    Serial.println("M5Stick C Plus device has been detected...");
+    Wire.begin(0, 26, 400000U);
+  #elif defined(ARDUINO_ARDUINO_NESSO_N1)
+    Serial.println("Arduino Nesso N1 device has been detected...");
+    Wire.begin(2, 7, 400000U);
+  #else
+    Serial.println("Another device has been detected...");
+    Wire.begin();
+  #endif
+  Serial.println("Comm has been started!");
+}
+void finishSetup() {
+  // this is the end....
+  Serial.println("Setup is over!");
+  for (int i = 0; i < 10; ++i) {
+    Serial.println("*** ***");
+    delay(50);
+  }
+  // finished, release loop();
+  hardwareStarted = true;
+}
 void setup() {
 
   // board init
@@ -269,27 +307,20 @@ void setup() {
   // display setup
   initDisplay();
 
-  // speaker
-  M5.Speaker.begin();
+  // waiting for UART, I2C, etc...
+  initComm();
 
-  // serial init
-  Serial.begin(115200);
-  for (int i = 0; i < 10; i++) {
-    Serial.println("........");
-    delay(250);
-  }
-
-  // Optional NTP
+  // configuring WiFi
   connectWiFiIfConfigured();
-
-  // sensor setup
-  initENV();
 
   // init web server and ota... etc
   initWebServer();
 
-  // finished
-  hardwareStarted = true;
+  // sensor setup
+  initHardware();
+
+  // finish him!
+  finishSetup();
 }
 bool verifyWifi() {
   // attempt to reconnect
@@ -495,23 +526,18 @@ void drawClockAndDate() {
 
 void drawScreen() {
 
-  Serial.println("Drawing screen...");
-  // variables
-  float tempC = NAN, hum = NAN;
-  float pressPa = NAN, pressHpa = NAN, altitude = NAN;
-
   // temperature sensor
   Serial.println("Fetching SHT30 data...");
-  if (sht30.update()) {
-    tempC = sht30.cTemp;
-    hum = sht30.humidity;
+  if (sht30.updated()) {
+    tempC = sht30.temperature();
+    hum = sht30.humidity();
     Serial.println(tempC);
     Serial.println(hum);
   }
   // pressure sensor
   Serial.println("Fetching QMP data...");
-  if (qmp.update()) {
-    pressPa = qmp.calcPressure();
+  if (qmp6988.updated()) {
+    float pressPa = qmp6988.pressure();
     Serial.println(pressPa);
     // conversions
     Serial.println("Converting Pressure...");
@@ -527,9 +553,9 @@ void drawScreen() {
   }
 
   // drawing data
+  Serial.println("(re)-drawing screen...");
   drawTopBar(tempC, hum, pressHpa, altitude);
   drawClockAndDate();
-
   Serial.println("Screen refresh is completed.");
 }
 
@@ -540,6 +566,7 @@ void loop() {
     verifyWifi();
     // handlers
     M5.update();
+    Units.update();
     server.handleClient();
     ElegantOTA.loop();
     // check for the last stock refresh :)
