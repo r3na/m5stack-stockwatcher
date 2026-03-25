@@ -133,6 +133,11 @@ public:
   }
 };
 
+// ====== MODE ======
+// Set to true for emergency smiley mode, false for stock watcher
+const bool EMERGENCY_MODE = false;
+const String EMERGENCY_URL = "https://***";
+
 // ====== AWS
 const String AWS_URL = "https://*";
 const String AWS_SEC = "*";
@@ -170,6 +175,15 @@ struct tm tinfo;
 WebServer server(80);
 Stock stock;
 float tempC = NAN, hum = NAN, pressHpa, altitude = NAN;
+
+// ====== Emergency smiley mode state ======
+const int SMILEY_EXPR_COUNT = 6;  // number of face expressions
+int smileyExpr = 0;
+bool smileyVisible = true;
+uint32_t lastSmileyUpdate = 0;
+const uint32_t SMILEY_FRAME_MS = 400;
+uint32_t lastEmergencyTrigger = 0;
+const uint32_t EMERGENCY_COOLDOWN_MS = 60 * 1000;  // 1 minute cooldown
 
 void connectWiFiIfConfigured() {
 
@@ -356,6 +370,7 @@ float fetchQNH() {
         String qnhStr = payload.substring(idx + 2, idx + 6);
         float qnh = qnhStr.toFloat();  // in hPa
         Serial.printf("QNH: %.1f hPa\n", qnh);
+        http.end();
         return qnh;
       } else {
         Serial.println("No QNH found in METAR");
@@ -526,6 +541,13 @@ void drawClockAndDate() {
 
 void drawScreen() {
 
+  // ====== EMERGENCY SMILEY MODE ======
+  if (EMERGENCY_MODE) {
+    drawSmileyFrame();
+    return;
+  }
+
+  // ====== STOCK WATCHER MODE ======
   // temperature sensor
   Serial.println("Fetching SHT30 data...");
   if (sht30.updated()) {
@@ -559,42 +581,213 @@ void drawScreen() {
   Serial.println("Screen refresh is completed.");
 }
 
+// ====== Emergency smiley mode functions ======
+
+// Draw a smiley face using graphics primitives
+// expr: 0=happy, 1=grin, 2=wink, 3=love, 4=surprised, 5=cool
+void drawSmileySingle(int cx, int cy, int r, uint16_t faceColor, int expr) {
+  // face circle
+  M5.Display.fillCircle(cx, cy, r, faceColor);
+  // outline
+  M5.Display.drawCircle(cx, cy, r, TFT_BLACK);
+
+  int eyeR = r / 5;
+  int eyeOffX = r / 3;
+  int eyeY = cy - r / 4;
+  int mouthY = cy + r / 4;
+
+  switch (expr) {
+    case 0:  // happy :)
+      M5.Display.fillCircle(cx - eyeOffX, eyeY, eyeR, TFT_BLACK);
+      M5.Display.fillCircle(cx + eyeOffX, eyeY, eyeR, TFT_BLACK);
+      // smile arc (draw as thick line segments)
+      for (int a = -40; a <= 40; a += 2) {
+        float rad = a * PI / 180.0;
+        int mx = cx + (int)(r * 0.45 * sin(rad));
+        int my = mouthY + (int)(r * 0.2 * cos(rad) * -1) + r / 6;
+        M5.Display.fillCircle(mx, my, 2, TFT_BLACK);
+      }
+      break;
+
+    case 1:  // big grin :D
+      M5.Display.fillCircle(cx - eyeOffX, eyeY, eyeR, TFT_BLACK);
+      M5.Display.fillCircle(cx + eyeOffX, eyeY, eyeR, TFT_BLACK);
+      // wide open mouth
+      M5.Display.fillRoundRect(cx - r / 3, mouthY, r * 2 / 3, r / 3, 4, TFT_BLACK);
+      M5.Display.fillRoundRect(cx - r / 4, mouthY + 2, r / 2, r / 5, 3, TFT_RED);  // tongue
+      break;
+
+    case 2:  // wink ;)
+      M5.Display.fillCircle(cx - eyeOffX, eyeY, eyeR, TFT_BLACK);
+      // winking eye = horizontal line
+      M5.Display.fillRect(cx + eyeOffX - eyeR, eyeY, eyeR * 2, 2, TFT_BLACK);
+      for (int a = -40; a <= 40; a += 2) {
+        float rad = a * PI / 180.0;
+        int mx = cx + (int)(r * 0.45 * sin(rad));
+        int my = mouthY + (int)(r * 0.2 * cos(rad) * -1) + r / 6;
+        M5.Display.fillCircle(mx, my, 2, TFT_BLACK);
+      }
+      break;
+
+    case 3:  // love eyes
+      // heart-shaped eyes (simplified as red circles)
+      M5.Display.fillCircle(cx - eyeOffX, eyeY, eyeR + 1, TFT_RED);
+      M5.Display.fillCircle(cx + eyeOffX, eyeY, eyeR + 1, TFT_RED);
+      for (int a = -40; a <= 40; a += 2) {
+        float rad = a * PI / 180.0;
+        int mx = cx + (int)(r * 0.45 * sin(rad));
+        int my = mouthY + (int)(r * 0.2 * cos(rad) * -1) + r / 6;
+        M5.Display.fillCircle(mx, my, 2, TFT_BLACK);
+      }
+      break;
+
+    case 4:  // surprised O_O
+      M5.Display.drawCircle(cx - eyeOffX, eyeY, eyeR + 2, TFT_BLACK);
+      M5.Display.drawCircle(cx - eyeOffX, eyeY, eyeR + 1, TFT_BLACK);
+      M5.Display.fillCircle(cx - eyeOffX, eyeY, eyeR - 1, TFT_BLACK);
+      M5.Display.drawCircle(cx + eyeOffX, eyeY, eyeR + 2, TFT_BLACK);
+      M5.Display.drawCircle(cx + eyeOffX, eyeY, eyeR + 1, TFT_BLACK);
+      M5.Display.fillCircle(cx + eyeOffX, eyeY, eyeR - 1, TFT_BLACK);
+      // O mouth
+      M5.Display.fillCircle(cx, mouthY + r / 8, r / 5, TFT_BLACK);
+      M5.Display.fillCircle(cx, mouthY + r / 8, r / 8, faceColor);
+      break;
+
+    case 5:  // cool B)
+      M5.Display.fillCircle(cx - eyeOffX, eyeY, eyeR, TFT_BLACK);
+      M5.Display.fillCircle(cx + eyeOffX, eyeY, eyeR, TFT_BLACK);
+      // sunglasses band
+      M5.Display.fillRect(cx - eyeOffX - eyeR - 2, eyeY - eyeR - 1, eyeOffX * 2 + eyeR * 2 + 4, eyeR * 2 + 2, TFT_DARKGREY);
+      // lens holes
+      M5.Display.fillCircle(cx - eyeOffX, eyeY, eyeR + 1, TFT_BLACK);
+      M5.Display.fillCircle(cx + eyeOffX, eyeY, eyeR + 1, TFT_BLACK);
+      // smirk
+      for (int a = -30; a <= 30; a += 2) {
+        float rad = a * PI / 180.0;
+        int mx = cx + (int)(r * 0.4 * sin(rad));
+        int my = mouthY + (int)(r * 0.15 * cos(rad) * -1) + r / 6;
+        M5.Display.fillCircle(mx, my, 2, TFT_BLACK);
+      }
+      break;
+  }
+}
+
+void drawSmileyFrame() {
+  uint32_t now = millis();
+  if (now - lastSmileyUpdate < SMILEY_FRAME_MS) return;
+  lastSmileyUpdate = now;
+
+  M5.Display.fillScreen(TFT_BLACK);
+
+  // blink: randomly hide the face ~15% of frames
+  smileyVisible = (random(100) > 15);
+
+  if (smileyVisible) {
+    // pick a random expression
+    smileyExpr = random(SMILEY_EXPR_COUNT);
+
+    // random position offset for "dancing"
+    int cx = M5.Display.width() / 2 + random(-15, 16);
+    int cy = M5.Display.height() / 2 + random(-10, 11);
+
+    // random radius for size variety
+    int r = 30 + random(0, 15);
+
+    // random face color
+    uint16_t faceColors[] = { TFT_YELLOW, 0xFDE0, 0xFE60, TFT_GREEN, TFT_CYAN };
+    uint16_t faceColor = faceColors[random(5)];
+
+    drawSmileySingle(cx, cy, r, faceColor, smileyExpr);
+  }
+}
+
+bool triggerEmergency() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, cannot trigger emergency!");
+    return false;
+  }
+
+  Serial.println("EMERGENCY triggered! Sending request...");
+
+  HTTPClient http;
+  if (!http.begin(EMERGENCY_URL)) {
+    Serial.println("http.begin() FAILED for emergency URL");
+    return false;
+  }
+
+  int httpCode = http.GET();
+  Serial.printf("Emergency HTTP code: %d\n", httpCode);
+  http.end();
+
+  if (httpCode == HTTP_CODE_OK) {
+    Serial.println("Emergency request sent successfully.");
+    // visual confirmation - flash screen
+    M5.Display.fillScreen(TFT_RED);
+    M5.Display.setTextDatum(textdatum_t::middle_center);
+    M5.Display.setTextSize(3);
+    M5.Display.setTextColor(TFT_WHITE, TFT_RED);
+    M5.Display.drawString("SENT!", M5.Display.width() / 2, M5.Display.height() / 2);
+    delay(1500);
+    return true;
+  }
+
+  Serial.println("Emergency request failed.");
+  return false;
+}
+
 void loop() {
   // system loop
   if (hardwareStarted) {
     // verify wifi
     verifyWifi();
-    // handlers
+    // common handlers for both modes
     M5.update();
-    Units.update();
     server.handleClient();
     ElegantOTA.loop();
-    // check for the last stock refresh :)
-    uint32_t now = millis();
-    bool refreshData = now - lastDraw >= DRAW_INTERVAL_MS;
 
-    // check button A, if pressed, then switch stocks
-    if (M5.BtnA.wasPressed()) {
-      Serial.println("Button A was pressed.");
-      M5.Speaker.tone(BEEP_NOTE_A, 200);
-      settingStock = !settingStock;
-      refreshData = true;
-    }
-
-    //  check button B, if pressed, force data & screen refresh
-    if (M5.BtnB.wasPressed()) {
-      Serial.println("Button B was pressed.");
-      M5.Speaker.tone(BEEP_NOTE_B, 200);
-      refreshData = true;
-    }
-
-    // only if needed
-    if (refreshData) {
-      lastDraw = now;
-      // refreshing screen and data, otherwise, sleep
+    if (EMERGENCY_MODE) {
+      // ====== EMERGENCY SMILEY MODE ======
       drawScreen();
+
+      // any button press triggers emergency (with cooldown)
+      if (M5.BtnA.wasPressed() || M5.BtnB.wasPressed()) {
+        uint32_t now = millis();
+        if (now - lastEmergencyTrigger >= EMERGENCY_COOLDOWN_MS) {
+          Serial.println("Button pressed in emergency mode!");
+          M5.Speaker.tone(BEEP_NOTE_A, 500);
+          if (triggerEmergency()) {
+            lastEmergencyTrigger = now;
+          }
+        } else {
+          Serial.println("Emergency cooldown active, ignoring press.");
+          M5.Speaker.tone(BEEP_NOTE_B, 100);
+        }
+      }
     } else {
-      delay(100);
+      // ====== STOCK WATCHER MODE ======
+      Units.update();
+      uint32_t now = millis();
+      bool refreshData = now - lastDraw >= DRAW_INTERVAL_MS;
+
+      if (M5.BtnA.wasPressed()) {
+        Serial.println("Button A was pressed.");
+        M5.Speaker.tone(BEEP_NOTE_A, 200);
+        settingStock = !settingStock;
+        refreshData = true;
+      }
+
+      if (M5.BtnB.wasPressed()) {
+        Serial.println("Button B was pressed.");
+        M5.Speaker.tone(BEEP_NOTE_B, 200);
+        refreshData = true;
+      }
+
+      if (refreshData) {
+        lastDraw = now;
+        drawScreen();
+      } else {
+        delay(100);
+      }
     }
   } else {
     // waiting for system wake up
